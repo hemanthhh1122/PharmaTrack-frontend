@@ -1,579 +1,513 @@
+
 import { useEffect, useState } from "react";
-import { ShoppingCart, Plus, Trash2, Receipt } from "lucide-react";
+import {
+  ShoppingCart,
+  Plus,
+  Trash2,
+  Receipt,
+  Package,
+  Printer,
+  CheckCircle
+} from "lucide-react";
 import API from "../services/api";
 
 function Sales() {
   const [medicines, setMedicines] = useState([]);
   const [batches, setBatches] = useState([]);
-  const [cart, setCart] = useState([]);
   const [sales, setSales] = useState([]);
+  const [selectedMedicine, setSelectedMedicine] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [fefoBatches, setFefoBatches] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [lastReceipt, setLastReceipt] = useState(null);
 
-  const [saleData, setSaleData] = useState({
-    medicineId: "",
-    batchId: "",
-    quantity: 1
-  });
-
-  // Load medicines
   const loadMedicines = async () => {
     try {
       const response = await API.get("/medicines");
       setMedicines(response.data);
     } catch (error) {
-      console.error("Error loading medicines:", error);
+      console.error(error);
     }
   };
 
-  // Load batches
   const loadBatches = async () => {
     try {
       const response = await API.get("/batches");
       setBatches(response.data);
     } catch (error) {
-      console.error("Error loading batches:", error);
+      console.error(error);
     }
   };
 
-  // Load sales history
   const loadSales = async () => {
     try {
       const response = await API.get("/sales");
       setSales(response.data);
     } catch (error) {
-      console.error("Error loading sales:", error);
+      console.error(error);
     }
   };
 
-  // Load all data
   useEffect(() => {
     loadMedicines();
     loadBatches();
     loadSales();
   }, []);
 
-  // Get batches belonging to selected medicine
-  const medicineBatches = batches.filter(
-    (batch) =>
-      Number(batch.medicineId) === Number(saleData.medicineId)
-  );
-
-  // Medicine selection
   const handleMedicineChange = (event) => {
-    setSaleData({
-      medicineId: event.target.value,
-      batchId: "",
-      quantity: 1
-    });
+    const medicineId = event.target.value;
+    setSelectedMedicine(medicineId);
+    setQuantity("");
+
+    const available = batches
+      .filter(
+        (batch) =>
+          Number(batch.medicineId) === Number(medicineId) &&
+          batch.quantity > 0 &&
+          batch.expiryDate &&
+          new Date(batch.expiryDate + "T00:00:00") >=
+            new Date(new Date().toDateString())
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.expiryDate) - new Date(b.expiryDate)
+      );
+
+    setFefoBatches(medicineId ? available : []);
+
+    if (medicineId && available.length === 0) {
+      alert("No unexpired stock available for this medicine.");
+    }
   };
 
-  // Add medicine to bill
   const addToCart = () => {
-    if (!saleData.medicineId) {
+    if (!selectedMedicine) {
       alert("Please select a medicine.");
       return;
     }
 
-    if (!saleData.batchId) {
-      alert("Please select a batch.");
+    const requested = Number(quantity);
+
+    if (!Number.isInteger(requested) || requested <= 0) {
+      alert("Enter a valid whole-number quantity.");
       return;
     }
 
-    const selectedBatch = batches.find(
-      (batch) =>
-        Number(batch.id) === Number(saleData.batchId)
+    const existingCartQuantity = cart
+      .filter(
+        (item) =>
+          Number(item.medicineId) === Number(selectedMedicine)
+      )
+      .reduce((sum, item) => sum + item.quantity, 0);
+
+    const availableStock = fefoBatches.reduce(
+      (sum, batch) => sum + batch.quantity,
+      0
     );
 
-    const selectedMedicine = medicines.find(
-      (medicine) =>
-        Number(medicine.id) === Number(saleData.medicineId)
-    );
-
-    if (!selectedBatch || !selectedMedicine) {
-      alert("Invalid medicine or batch.");
+    if (requested + existingCartQuantity > availableStock) {
+      alert(`Insufficient stock. Available: ${availableStock}`);
       return;
     }
 
-    const quantity = Number(saleData.quantity);
+    let remaining = requested;
+    const allocations = [];
 
-    if (quantity <= 0) {
-      alert("Quantity must be greater than 0.");
-      return;
-    }
+    for (const batch of fefoBatches) {
+      if (remaining <= 0) break;
 
-    if (quantity > selectedBatch.quantity) {
-      alert(
-        `Only ${selectedBatch.quantity} units are available in this batch.`
-      );
-      return;
-    }
+      const alreadyInCart = cart
+        .filter((item) => Number(item.batchId) === Number(batch.id))
+        .reduce((sum, item) => sum + item.quantity, 0);
 
-    const existingItem = cart.find(
-      (item) => item.batchId === selectedBatch.id
-    );
+      const available = Math.max(0, batch.quantity - alreadyInCart);
+      const allocated = Math.min(remaining, available);
 
-    if (existingItem) {
-      const newQuantity =
-        existingItem.quantity + quantity;
-
-      if (newQuantity > selectedBatch.quantity) {
-        alert(
-          `Only ${selectedBatch.quantity} units are available in this batch.`
+      if (allocated > 0) {
+        const medicine = medicines.find(
+          (item) => Number(item.id) === Number(selectedMedicine)
         );
-        return;
-      }
 
-      setCart(
-        cart.map((item) =>
-          item.batchId === selectedBatch.id
-            ? {
-                ...item,
-                quantity: newQuantity
-              }
-            : item
-        )
-      );
-    } else {
-      setCart([
-        ...cart,
-        {
-          id: Date.now(),
-          medicineId: selectedMedicine.id,
-          medicineName: selectedMedicine.medicineName,
-          batchId: selectedBatch.id,
-          batchNumber: selectedBatch.batchNumber,
-          quantity: quantity,
-          price: Number(selectedBatch.sellingPrice),
-          availableStock: selectedBatch.quantity
-        }
-      ]);
+        allocations.push({
+          medicineId: Number(selectedMedicine),
+          medicineName: medicine?.medicineName || "Unknown Medicine",
+          batchId: batch.id,
+          batchNumber: batch.batchNumber,
+          expiryDate: batch.expiryDate,
+          quantity: allocated,
+          sellingPrice: Number(batch.sellingPrice),
+          total: allocated * Number(batch.sellingPrice)
+        });
+
+        remaining -= allocated;
+      }
     }
 
-    setSaleData({
-      medicineId: "",
-      batchId: "",
-      quantity: 1
-    });
+    if (remaining > 0) {
+      alert("Unable to allocate the requested quantity. Refresh and try again.");
+      return;
+    }
+
+    setCart((current) => [...current, ...allocations]);
+    setQuantity("");
   };
 
-  // Remove item from bill
-  const removeFromCart = (id) => {
-    setCart(
-      cart.filter((item) => item.id !== id)
+  const removeFromCart = (batchId) => {
+    setCart((current) =>
+      current.filter((item) => Number(item.batchId) !== Number(batchId))
     );
   };
 
-  // Calculate total
-  const total = cart.reduce(
-    (sum, item) =>
-      sum + item.price * item.quantity,
-    0
-  );
+  const cartTotal = cart.reduce((sum, item) => sum + item.total, 0);
 
-  // Complete sale
   const completeSale = async () => {
     if (cart.length === 0) {
-      alert("Please add at least one medicine.");
+      alert("Add at least one medicine to the bill.");
       return;
     }
 
+    if (
+      !window.confirm(
+        `Complete this sale for ₹${cartTotal.toFixed(2)}?`
+      )
+    ) {
+      return;
+    }
+
+    const receiptLines = cart.map((item) => ({ ...item }));
+
     try {
-      for (const item of cart) {
-        await API.post("/sales", {
+      const completedSales = [];
+
+      for (const item of receiptLines) {
+        const response = await API.post("/sales", {
           medicineId: item.medicineId,
           batchId: item.batchId,
-          quantity: item.quantity,
-          sellingPrice: item.price,
-          totalAmount:
-            item.price * item.quantity,
-          saleDate: new Date().toISOString()
+          quantity: item.quantity
         });
+
+        completedSales.push(response.data);
       }
 
-      alert("Sale completed successfully.");
+      setLastReceipt({
+        billNumber: `PT-${Date.now()}`,
+        saleDate: new Date().toISOString(),
+        items: receiptLines,
+        total: completedSales.reduce(
+          (sum, sale) => sum + Number(sale.totalAmount || 0),
+          0
+        )
+      });
 
       setCart([]);
+      setSelectedMedicine("");
+      setQuantity("");
+      setFefoBatches([]);
 
-      // Refresh inventory and sales history
-      await loadBatches();
-      await loadSales();
-
+      await Promise.all([loadBatches(), loadSales()]);
+      alert("Sale completed. Your receipt is ready to print.");
     } catch (error) {
-      console.error(
-        "Error completing sale:",
-        error
+      console.error("Sale error:", error);
+      await Promise.all([loadBatches(), loadSales()]);
+      alert(
+        "The sale could not be completed fully. Please check Sales History and inventory before retrying."
       );
-
-      alert("Unable to complete sale.");
     }
+  };
+
+  const getMedicineName = (id) =>
+    medicines.find((item) => Number(item.id) === Number(id))
+      ?.medicineName || "Unknown Medicine";
+
+  const printReceipt = () => {
+    window.print();
   };
 
   return (
     <div className="sales-page">
-
-      {/* Page Header */}
-
-      <div className="page-header">
-
+      <div className="page-header no-print">
         <div>
           <h2>Sales & Billing</h2>
-          <p>Create and manage pharmacy sales</p>
+          <p>Process medicine sales and print receipts</p>
         </div>
-
-        <div className="sales-icon">
-          <Receipt size={24} />
+        <div className="sales-header-icon">
+          <ShoppingCart size={24} />
         </div>
-
       </div>
 
-
-      {/* Billing Section */}
-
-      <div className="sales-layout">
-
-        {/* Add Medicine */}
-
-        <div className="form-card">
-
-          <h3>Add Medicine to Sale</h3>
-
-          <div className="form-group">
-
-            <label>Medicine</label>
-
-            <select
-              value={saleData.medicineId}
-              onChange={handleMedicineChange}
-            >
-
-              <option value="">
-                Select medicine
-              </option>
-
-              {medicines.map((medicine) => (
-                <option
-                  key={medicine.id}
-                  value={medicine.id}
-                >
-                  {medicine.medicineName}
-                </option>
-              ))}
-
-            </select>
-
-          </div>
-
-
-          <div className="form-group">
-
-            <label>Batch</label>
-
-            <select
-              value={saleData.batchId}
-              onChange={(event) =>
-                setSaleData({
-                  ...saleData,
-                  batchId: event.target.value
-                })
-              }
-              disabled={!saleData.medicineId}
-            >
-
-              <option value="">
-                Select batch
-              </option>
-
-              {medicineBatches.map((batch) => (
-                <option
-                  key={batch.id}
-                  value={batch.id}
-                >
-                  {batch.batchNumber} — Stock:{" "}
-                  {batch.quantity}
-                </option>
-              ))}
-
-            </select>
-
-          </div>
-
-
-          <div className="form-group">
-
-            <label>Quantity</label>
-
-            <input
-              type="number"
-              min="1"
-              value={saleData.quantity}
-              onChange={(event) =>
-                setSaleData({
-                  ...saleData,
-                  quantity: event.target.value
-                })
-              }
-            />
-
-          </div>
-
-
-          <button
-            className="primary-button"
-            onClick={addToCart}
-          >
-            <Plus size={18} />
-            Add to Bill
-          </button>
-
-        </div>
-
-
-        {/* Current Bill */}
-
-        <div className="table-card bill-card">
-
-          <div className="table-toolbar">
-
+      {lastReceipt && (
+        <section className="receipt-card">
+          <div className="receipt-actions no-print">
             <div>
-              <h3>Current Bill</h3>
-
-              <span>
-                {cart.length} item(s)
-              </span>
+              <h3><CheckCircle size={20} /> Sale completed</h3>
+              <p>Receipt {lastReceipt.billNumber} is ready.</p>
             </div>
-
-            <ShoppingCart size={22} />
-
+            <button className="primary-button" onClick={printReceipt}>
+              <Printer size={18} /> Print Receipt
+            </button>
           </div>
 
+          <div className="print-receipt">
+            <div className="receipt-heading">
+              <h1>PharmaTrack</h1>
+              <p>PHARMACY SALES RECEIPT</p>
+              <p>Thank you for your purchase</p>
+            </div>
 
-          {cart.length === 0 ? (
-
-            <div className="empty-state">
-
-              <ShoppingCart size={42} />
-
-              <h3>No items added</h3>
-
+            <div className="receipt-meta">
+              <p><strong>Bill No:</strong> {lastReceipt.billNumber}</p>
               <p>
-                Add medicines to create a bill.
+                <strong>Date:</strong>{" "}
+                {new Date(lastReceipt.saleDate).toLocaleString("en-IN")}
               </p>
-
             </div>
 
-          ) : (
-
-            <>
-
-              <div className="table-wrapper">
-
-                <table>
-
-                  <thead>
-
-                    <tr>
-                      <th>Medicine</th>
-                      <th>Batch</th>
-                      <th>Quantity</th>
-                      <th>Price</th>
-                      <th>Total</th>
-                      <th>Action</th>
-                    </tr>
-
-                  </thead>
-
-                  <tbody>
-
-                    {cart.map((item) => (
-
-                      <tr key={item.id}>
-
-                        <td>
-                          <strong>
-                            {item.medicineName}
-                          </strong>
-                        </td>
-
-                        <td>
-                          {item.batchNumber}
-                        </td>
-
-                        <td>
-                          {item.quantity}
-                        </td>
-
-                        <td>
-                          ₹{item.price.toFixed(2)}
-                        </td>
-
-                        <td>
-                          ₹
-                          {(
-                            item.price *
-                            item.quantity
-                          ).toFixed(2)}
-                        </td>
-
-                        <td>
-
-                          <button
-                            className="delete-button"
-                            onClick={() =>
-                              removeFromCart(item.id)
-                            }
-                          >
-                            <Trash2 size={17} />
-                          </button>
-
-                        </td>
-
-                      </tr>
-
-                    ))}
-
-                  </tbody>
-
-                </table>
-
-              </div>
-
-
-              <div className="bill-total">
-
-                <span>
-                  Total Amount
-                </span>
-
-                <strong>
-                  ₹{total.toFixed(2)}
-                </strong>
-
-              </div>
-
-
-              <button
-                className="primary-button checkout-button"
-                onClick={completeSale}
-              >
-                Complete Sale
-              </button>
-
-            </>
-
-          )}
-
-        </div>
-
-      </div>
-
-
-      {/* SALES HISTORY */}
-
-      <div className="table-card">
-
-        <div className="table-toolbar">
-
-          <div>
-
-            <h3>Sales History</h3>
-
-            <span>
-              {sales.length} transaction(s)
-            </span>
-
-          </div>
-
-          <Receipt size={22} />
-
-        </div>
-
-
-        {sales.length === 0 ? (
-
-          <div className="empty-state">
-
-            <Receipt size={42} />
-
-            <h3>No sales history</h3>
-
-            <p>
-              Completed sales will appear here.
-            </p>
-
-          </div>
-
-        ) : (
-
-          <div className="table-wrapper">
-
-            <table>
-
+            <table className="receipt-table">
               <thead>
-
                 <tr>
-                  <th>Medicine ID</th>
-                  <th>Batch ID</th>
-                  <th>Quantity</th>
-                  <th>Selling Price</th>
-                  <th>Total Amount</th>
-                  <th>Sale Date</th>
+                  <th>Medicine / Batch</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Amount</th>
                 </tr>
-
               </thead>
-
               <tbody>
-
-                {sales.map((sale) => (
-
-                  <tr key={sale.id}>
-
+                {lastReceipt.items.map((item, index) => (
+                  <tr key={`${item.batchId}-${index}`}>
                     <td>
-                      {sale.medicineId}
+                      <strong>{item.medicineName}</strong>
+                      <div>Batch: {item.batchNumber}</div>
+                      <div>Expiry: {item.expiryDate}</div>
                     </td>
-
-                    <td>
-                      {sale.batchId}
-                    </td>
-
-                    <td>
-                      {sale.quantity}
-                    </td>
-
-                    <td>
-                      ₹
-                      {Number(
-                        sale.sellingPrice
-                      ).toFixed(2)}
-                    </td>
-
-                    <td>
-                      ₹
-                      {Number(
-                        sale.totalAmount
-                      ).toFixed(2)}
-                    </td>
-
-                    <td>
-                      {sale.saleDate
-                        ? new Date(
-                            sale.saleDate
-                          ).toLocaleString("en-IN")
-                        : "-"}
-                    </td>
-
+                    <td>{item.quantity}</td>
+                    <td>₹{item.sellingPrice.toFixed(2)}</td>
+                    <td>₹{item.total.toFixed(2)}</td>
                   </tr>
-
                 ))}
-
               </tbody>
-
             </table>
 
+            <div className="receipt-total">
+              <strong>Grand Total</strong>
+              <strong>₹{lastReceipt.total.toFixed(2)}</strong>
+            </div>
+
+            <p className="receipt-footer">
+              Please retain this receipt for your records.
+            </p>
+          </div>
+        </section>
+      )}
+
+      <div className="sales-layout no-print">
+        <div className="table-card">
+          <div className="card-header">
+            <div>
+              <h3>Create Sale</h3>
+              <p>Earliest-expiring batches are allocated first.</p>
+            </div>
+            <Receipt size={22} />
           </div>
 
-        )}
+          <div className="form-grid">
+            <div className="form-group">
+              <label>Medicine</label>
+              <select
+                value={selectedMedicine}
+                onChange={handleMedicineChange}
+              >
+                <option value="">Select medicine</option>
+                {medicines.map((medicine) => (
+                  <option key={medicine.id} value={medicine.id}>
+                    {medicine.medicineName}
+                  </option>
+                ))}
+              </select>
+            </div>
 
+            <div className="form-group">
+              <label>FEFO Batch Order</label>
+              <input
+                readOnly
+                value={fefoBatches.map(
+                  (batch) => `${batch.batchNumber} (${batch.expiryDate})`
+                ).join(" → ")}
+                placeholder="Select a medicine"
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Quantity</label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={quantity}
+                onChange={(event) => setQuantity(event.target.value)}
+                placeholder="Enter quantity"
+              />
+            </div>
+          </div>
+
+          {fefoBatches.length > 0 && (
+            <div className="inventory-summary">
+              <div className="inventory-summary-card">
+                <Package size={20} />
+                <div>
+                  <span>Total Available Stock</span>
+                  <strong>
+                    {fefoBatches.reduce((sum, batch) => sum + batch.quantity, 0)}
+                  </strong>
+                </div>
+              </div>
+              <div className="inventory-summary-card">
+                <Package size={20} />
+                <div>
+                  <span>Earliest Expiry</span>
+                  <strong>{fefoBatches[0].expiryDate}</strong>
+                </div>
+              </div>
+              <div className="inventory-summary-card">
+                <Package size={20} />
+                <div>
+                  <span>First FEFO Batch</span>
+                  <strong>{fefoBatches[0].batchNumber}</strong>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="form-actions">
+            <button className="primary-button" onClick={addToCart}>
+              <Plus size={18} /> Add to Cart
+            </button>
+          </div>
+        </div>
+
+        <div className="table-card">
+          <div className="card-header">
+            <div>
+              <h3>Current Bill</h3>
+              <p>Review before completing the sale</p>
+            </div>
+            <ShoppingCart size={22} />
+          </div>
+
+          {cart.length === 0 ? (
+            <div className="empty-state">
+              <ShoppingCart size={42} />
+              <h3>Cart is empty</h3>
+              <p>Add medicines to create a sale.</p>
+            </div>
+          ) : (
+            <div className="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Medicine</th>
+                    <th>Batch</th>
+                    <th>Qty</th>
+                    <th>Amount</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cart.map((item) => (
+                    <tr key={item.batchId}>
+                      <td><strong>{item.medicineName}</strong></td>
+                      <td>{item.batchNumber}</td>
+                      <td>{item.quantity}</td>
+                      <td>₹{item.total.toFixed(2)}</td>
+                      <td>
+                        <button
+                          className="delete-button"
+                          onClick={() => removeFromCart(item.batchId)}
+                        >
+                          <Trash2 size={17} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {cart.length > 0 && (
+            <>
+              <div className="sales-total">
+                <span>Total Amount</span>
+                <strong>₹{cartTotal.toFixed(2)}</strong>
+              </div>
+              <div className="form-actions">
+                <button
+                  className="secondary-button"
+                  onClick={() => setCart([])}
+                >
+                  Clear Cart
+                </button>
+                <button className="primary-button" onClick={completeSale}>
+                  <Receipt size={18} /> Complete Sale
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
+      <div className="table-card no-print">
+        <div className="card-header">
+          <div>
+            <h3>Sales History</h3>
+            <p>Recently completed sales</p>
+          </div>
+          <Receipt size={22} />
+        </div>
+
+        {sales.length === 0 ? (
+          <div className="empty-state">
+            <Receipt size={42} />
+            <h3>No sales yet</h3>
+            <p>Completed sales will appear here.</p>
+          </div>
+        ) : (
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Medicine</th>
+                  <th>Batch</th>
+                  <th>Quantity</th>
+                  <th>Unit Price</th>
+                  <th>Total</th>
+                  <th>Sale Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...sales]
+                  .sort(
+                    (a, b) =>
+                      new Date(b.saleDate) - new Date(a.saleDate)
+                  )
+                  .map((sale) => (
+                    <tr key={sale.id}>
+                      <td><strong>{getMedicineName(sale.medicineId)}</strong></td>
+                      <td>{sale.batchId}</td>
+                      <td>{sale.quantity}</td>
+                      <td>₹{Number(sale.sellingPrice).toFixed(2)}</td>
+                      <td>₹{Number(sale.totalAmount).toFixed(2)}</td>
+                      <td>
+                        {sale.saleDate
+                          ? new Date(sale.saleDate).toLocaleString("en-IN")
+                          : "-"}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -1,5 +1,14 @@
-import { Package, Plus, Search, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  Package,
+  Plus,
+  Search,
+  Trash2,
+  Download,
+  Upload,
+  FileDown,
+} from "lucide-react";
+
+import { useEffect, useRef, useState } from "react";
 import API from "../services/api";
 
 function Inventory() {
@@ -7,6 +16,9 @@ function Inventory() {
   const [batches, setBatches] = useState([]);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [csvLoading, setCsvLoading] = useState(false);
+
+  const fileInput = useRef(null);
 
   const [formData, setFormData] = useState({
     medicineId: "",
@@ -15,7 +27,7 @@ function Inventory() {
     expiryDate: "",
     quantity: "",
     purchasePrice: "",
-    sellingPrice: ""
+    sellingPrice: "",
   });
 
   // Load medicines
@@ -43,11 +55,110 @@ function Inventory() {
     loadBatches();
   }, []);
 
+  // Download CSV
+  const downloadCsv = (data, filename) => {
+    const blob = new Blob([data], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.URL.revokeObjectURL(url);
+  };
+
+  // Download template
+  const downloadBatchTemplate = async () => {
+    try {
+      const response = await API.get("/csv/batches/template", {
+        responseType: "blob",
+      });
+
+      downloadCsv(response.data, "batches_template.csv");
+    } catch (error) {
+      console.error(error);
+      alert("Unable to download batch template.");
+    }
+  };
+
+  // Export batches
+  const exportBatches = async () => {
+    try {
+      const response = await API.get("/csv/batches/export", {
+        responseType: "blob",
+      });
+
+      downloadCsv(response.data, "batches.csv");
+    } catch (error) {
+      console.error(error);
+      alert("Unable to export batches.");
+    }
+  };
+
+  // Import batches
+  const importBatches = async (event) => {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      alert("Please select a CSV file.");
+      event.target.value = "";
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      alert("CSV file must be 5 MB or smaller.");
+      event.target.value = "";
+      return;
+    }
+
+    if (!window.confirm("Import batches from this CSV file?")) {
+      event.target.value = "";
+      return;
+    }
+
+    const data = new FormData();
+    data.append("file", file);
+
+    setCsvLoading(true);
+
+    try {
+      const response = await API.post(
+        "/csv/batches/import",
+        data
+      );
+
+      alert(
+        `${response.data.message}. Imported: ${response.data.importedCount}`
+      );
+
+      await loadBatches();
+    } catch (error) {
+      console.error("Import error:", error);
+
+      alert(
+        error.response?.data?.message ||
+          "Import failed. Check the CSV headers, medicine IDs, dates and values."
+      );
+    } finally {
+      setCsvLoading(false);
+      event.target.value = "";
+    }
+  };
+
   // Handle form changes
   const handleChange = (event) => {
     setFormData({
       ...formData,
-      [event.target.name]: event.target.value
+      [event.target.name]: event.target.value,
     });
   };
 
@@ -63,7 +174,7 @@ function Inventory() {
         expiryDate: formData.expiryDate,
         quantity: Number(formData.quantity),
         purchasePrice: Number(formData.purchasePrice),
-        sellingPrice: Number(formData.sellingPrice)
+        sellingPrice: Number(formData.sellingPrice),
       });
 
       alert("Batch added successfully.");
@@ -75,12 +186,11 @@ function Inventory() {
         expiryDate: "",
         quantity: "",
         purchasePrice: "",
-        sellingPrice: ""
+        sellingPrice: "",
       });
 
       setShowForm(false);
-      loadBatches();
-
+      await loadBatches();
     } catch (error) {
       console.error("Error adding batch:", error);
       alert("Unable to add batch.");
@@ -97,20 +207,22 @@ function Inventory() {
 
     try {
       await API.delete(`/batches/${id}`);
-      loadBatches();
+      await loadBatches();
     } catch (error) {
       console.error("Error deleting batch:", error);
       alert("Unable to delete batch.");
     }
   };
 
-  // Find medicine name using medicine ID
+  // Get medicine name
   const getMedicineName = (medicineId) => {
     const medicine = medicines.find(
       (medicine) => medicine.id === medicineId
     );
 
-    return medicine ? medicine.medicineName : "Unknown Medicine";
+    return medicine
+      ? medicine.medicineName
+      : "Unknown Medicine";
   };
 
   // Search batches
@@ -121,22 +233,20 @@ function Inventory() {
       batch.batchNumber
         ?.toLowerCase()
         .includes(search.toLowerCase()) ||
-      medicineName
-        .toLowerCase()
-        .includes(search.toLowerCase())
+      medicineName.toLowerCase().includes(search.toLowerCase())
     );
   });
 
-  // Summary values
+  // Inventory summary
   const totalStock = batches.reduce(
     (sum, batch) => sum + (batch.quantity || 0),
     0
   );
 
   const totalBatches = batches.length;
-
   const today = new Date();
 
+  // Corrected expiring-soon calculation
   const expiringSoon = batches.filter((batch) => {
     const expiry = new Date(batch.expiryDate);
     const difference =
@@ -145,6 +255,7 @@ function Inventory() {
     return difference >= 0 && difference <= 30;
   }).length;
 
+  // Expired batches
   const expired = batches.filter((batch) => {
     const expiry = new Date(batch.expiryDate);
     return expiry < today;
@@ -152,31 +263,67 @@ function Inventory() {
 
   return (
     <div className="inventory-page">
-
       {/* Page Header */}
-
       <div className="page-header">
-
         <div>
           <h2>Inventory</h2>
           <p>Manage medicine batches and stock</p>
         </div>
 
-        <button
-          className="primary-button"
-          onClick={() => setShowForm(!showForm)}
+        <div
+          style={{
+            display: "flex",
+            gap: "8px",
+            flexWrap: "wrap",
+          }}
         >
-          <Plus size={18} />
-          Add Batch
-        </button>
+          <button
+            className="secondary-button"
+            onClick={downloadBatchTemplate}
+            disabled={csvLoading}
+          >
+            <FileDown size={16} />
+            Template
+          </button>
 
+          <button
+            className="secondary-button"
+            onClick={exportBatches}
+            disabled={csvLoading}
+          >
+            <Download size={16} />
+            Export CSV
+          </button>
+
+          <button
+            className="primary-button"
+            onClick={() => fileInput.current?.click()}
+            disabled={csvLoading}
+          >
+            <Upload size={16} />
+            {csvLoading ? "Importing..." : "Import CSV"}
+          </button>
+
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={importBatches}
+            style={{ display: "none" }}
+          />
+
+          <button
+            className="primary-button"
+            onClick={() => setShowForm(!showForm)}
+          >
+            <Plus size={18} />
+            Add Batch
+          </button>
+        </div>
       </div>
 
-
       {/* Inventory Summary */}
-
       <div className="inventory-summary">
-
         <div className="inventory-summary-card">
           <Package size={22} />
           <div>
@@ -208,35 +355,24 @@ function Inventory() {
             <strong>{expired}</strong>
           </div>
         </div>
-
       </div>
 
-
       {/* Add Batch Form */}
-
       {showForm && (
         <div className="form-card">
-
           <h3>Add New Batch</h3>
 
           <form onSubmit={handleSubmit}>
-
             <div className="form-grid">
-
               <div className="form-group">
-
                 <label>Medicine</label>
-
                 <select
                   name="medicineId"
                   value={formData.medicineId}
                   onChange={handleChange}
                   required
                 >
-
-                  <option value="">
-                    Select medicine
-                  </option>
+                  <option value="">Select medicine</option>
 
                   {medicines.map((medicine) => (
                     <option
@@ -246,16 +382,11 @@ function Inventory() {
                       {medicine.medicineName}
                     </option>
                   ))}
-
                 </select>
-
               </div>
 
-
               <div className="form-group">
-
                 <label>Batch Number</label>
-
                 <input
                   type="text"
                   name="batchNumber"
@@ -264,14 +395,10 @@ function Inventory() {
                   placeholder="e.g. PCM24001"
                   required
                 />
-
               </div>
 
-
               <div className="form-group">
-
                 <label>Manufacturing Date</label>
-
                 <input
                   type="date"
                   name="manufacturingDate"
@@ -279,14 +406,10 @@ function Inventory() {
                   onChange={handleChange}
                   required
                 />
-
               </div>
 
-
               <div className="form-group">
-
                 <label>Expiry Date</label>
-
                 <input
                   type="date"
                   name="expiryDate"
@@ -294,14 +417,10 @@ function Inventory() {
                   onChange={handleChange}
                   required
                 />
-
               </div>
 
-
               <div className="form-group">
-
                 <label>Quantity</label>
-
                 <input
                   type="number"
                   name="quantity"
@@ -311,14 +430,10 @@ function Inventory() {
                   min="1"
                   required
                 />
-
               </div>
 
-
               <div className="form-group">
-
                 <label>Purchase Price</label>
-
                 <input
                   type="number"
                   name="purchasePrice"
@@ -329,14 +444,10 @@ function Inventory() {
                   step="0.01"
                   required
                 />
-
               </div>
 
-
               <div className="form-group">
-
                 <label>Selling Price</label>
-
                 <input
                   type="number"
                   name="sellingPrice"
@@ -347,14 +458,10 @@ function Inventory() {
                   step="0.01"
                   required
                 />
-
               </div>
-
             </div>
 
-
             <div className="form-actions">
-
               <button
                 type="button"
                 className="secondary-button"
@@ -369,21 +476,14 @@ function Inventory() {
               >
                 Add Batch
               </button>
-
             </div>
-
           </form>
-
         </div>
       )}
 
-
       {/* Batch Table */}
-
       <div className="table-card">
-
         <div className="table-toolbar">
-
           <div>
             <h3>Inventory Batches</h3>
             <span>
@@ -392,7 +492,6 @@ function Inventory() {
           </div>
 
           <div className="table-search">
-
             <Search size={18} />
 
             <input
@@ -403,34 +502,21 @@ function Inventory() {
                 setSearch(event.target.value)
               }
             />
-
           </div>
-
         </div>
 
-
         {filteredBatches.length === 0 ? (
-
           <div className="empty-state">
-
             <Package size={42} />
-
             <h3>No inventory batches</h3>
-
             <p>
               Add medicine batches to start tracking inventory.
             </p>
-
           </div>
-
         ) : (
-
           <div className="table-wrapper">
-
             <table>
-
               <thead>
-
                 <tr>
                   <th>Medicine</th>
                   <th>Batch Number</th>
@@ -441,16 +527,11 @@ function Inventory() {
                   <th>Selling Price</th>
                   <th>Action</th>
                 </tr>
-
               </thead>
 
-
               <tbody>
-
                 {filteredBatches.map((batch) => (
-
                   <tr key={batch.id}>
-
                     <td>
                       <strong>
                         {getMedicineName(batch.medicineId)}
@@ -458,42 +539,27 @@ function Inventory() {
                     </td>
 
                     <td>{batch.batchNumber}</td>
-
                     <td>{batch.manufacturingDate}</td>
-
                     <td>{batch.expiryDate}</td>
-
                     <td>{batch.quantity}</td>
-
                     <td>₹{batch.purchasePrice}</td>
-
                     <td>₹{batch.sellingPrice}</td>
 
                     <td>
-
                       <button
                         className="delete-button"
                         onClick={() => deleteBatch(batch.id)}
                       >
                         <Trash2 size={17} />
                       </button>
-
                     </td>
-
                   </tr>
-
                 ))}
-
               </tbody>
-
             </table>
-
           </div>
-
         )}
-
       </div>
-
     </div>
   );
 }
