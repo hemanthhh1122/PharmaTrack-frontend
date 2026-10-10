@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://pharmatrack-backend1-13z4.onrender.com/api/:path*"
+    }
+  ]
+}
